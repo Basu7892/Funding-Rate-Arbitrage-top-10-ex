@@ -1,0 +1,64 @@
+name: Funding Arbitrage Scanner
+
+# Runs the scanner in the BACKGROUND on GitHub's own servers - no need to
+# keep Codespace or your PC open. It resumes automatically every run
+# because funding_checkpoint.json / funding_raw_all.csv are committed
+# back into the repo at the end of each run.
+
+on:
+  workflow_dispatch:        # lets you click "Run workflow" manually on GitHub
+    inputs:
+      mode:
+        description: "test | fetch | report | all"
+        default: "all"
+        required: false
+  schedule:
+    # Runs every 6 hours automatically so a full 180-day / all-exchange
+    # fetch gets built up over several runs even if one run times out.
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write   # needed so the workflow can commit progress files back
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    # GitHub free/pro runners have a 6-hour (360 min) job limit. We stop
+    # the fetch a bit before that so there is time left to commit results.
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scanner (time-boxed so the job can still commit results)
+        run: |
+          MODE="${{ github.event.inputs.mode || 'all' }}"
+          # 320 minutes = 19200 seconds; leaves ~30 min buffer for commit step
+          timeout 19200 python funding_arbitrage_scanner.py "$MODE" || true
+
+      - name: Commit progress + report back to repo
+        run: |
+          git config user.name "funding-scanner-bot"
+          git config user.email "actions@github.com"
+          git add funding_checkpoint.json funding_raw_all.csv funding_errors.log funding_arbitrage_report.xlsx 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "Update funding data / report [skip ci]"
+          git push
+
+      - name: Upload report as downloadable artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: funding-arbitrage-report
+          path: |
+            funding_arbitrage_report.xlsx
+            funding_errors.log
+          if-no-files-found: ignore
