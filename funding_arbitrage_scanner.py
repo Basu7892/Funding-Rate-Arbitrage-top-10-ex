@@ -128,10 +128,20 @@ def load_json(path, default):
     return default
 
 
-def save_json_locked(path, data, lock):
-    with lock:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+def checkpoint_get(checkpoint, key):
+    with checkpoint_lock:
+        return checkpoint.get(key)
+
+
+def checkpoint_mark_done(checkpoint, key, path):
+    # Mutate AND snapshot under the same lock so no other thread can be
+    # adding a key while json.dump() iterates the dict (fixes
+    # "RuntimeError: dictionary changed size during iteration").
+    with checkpoint_lock:
+        checkpoint[key] = "done"
+        snapshot = dict(checkpoint)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f)
 
 
 def append_rows_csv(rows):
@@ -235,14 +245,13 @@ def run_exchange(ex_name, checkpoint, test_mode):
 
     for i, (symbol, coin) in enumerate(markets, 1):
         key = f"{ex_name}:{symbol}"
-        if not test_mode and checkpoint.get(key) == "done":
+        if not test_mode and checkpoint_get(checkpoint, key) == "done":
             continue
         rows = fetch_symbol_history_with_retry(exchange, ex_name, symbol, coin)
         append_rows_csv(rows)
         print(f"  [{ex_name} {i}/{len(markets)}] {symbol}: {len(rows)} records")
         if not test_mode:
-            checkpoint[key] = "done"
-            save_json_locked(CHECKPOINT_FILE, checkpoint, checkpoint_lock)
+            checkpoint_mark_done(checkpoint, key, CHECKPOINT_FILE)
 
     print(f"=== {ex_name} finished ===")
 
