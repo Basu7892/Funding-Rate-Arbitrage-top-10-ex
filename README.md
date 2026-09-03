@@ -8,9 +8,10 @@ Fetches HISTORICAL FUNDING RATES for ALL altcoin perpetual contracts
     Binance, Bybit, KuCoin, MEXC, Kraken, HTX, Gate.Io, Coinbase,
     Hyperliquid(DEX), Bitget
 
-...over the last 200 days, using ccxt's unified API. All exchanges are
-fetched IN PARALLEL (separate threads). If a coin fails, it is retried
-(with backoff) on the SAME coin before moving on.
+...over the last 200 days, using ccxt's unified API. Exchanges are fetched
+SEQUENTIALLY - one exchange is completely finished before the next one
+starts. If a coin fails, it is retried (with backoff) on the SAME coin
+before moving on.
 
 Produces an Excel report laid out like:
 
@@ -48,7 +49,6 @@ import time
 import csv
 import threading
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor
 
 import ccxt
 
@@ -95,7 +95,7 @@ EXCHANGE_IDS = {
     "MEXC": "mexc",
     "Kraken": "krakenfutures",
     "HTX": "htx",
-    "Gate.Io": "gateio",
+    "Gate.Io": "gate",
     "Coinbase": "coinbaseinternational",
     "Hyperliquid(DEX)": "hyperliquid",
     "Bitget": "bitget",
@@ -257,12 +257,13 @@ def run_exchange(ex_name, checkpoint, test_mode):
 
 
 def fetch_all(test_mode=False):
+    # SEQUENTIAL: one exchange is fully finished (all its altcoin symbols)
+    # before the next exchange starts. Safer/more predictable than running
+    # all exchanges in parallel - no shared-state race conditions, and
+    # each exchange's own rate limit is respected on its own.
     checkpoint = load_json(CHECKPOINT_FILE, {})
-    with ThreadPoolExecutor(max_workers=len(EXCHANGE_IDS)) as pool:
-        futures = [pool.submit(run_exchange, name, checkpoint, test_mode)
-                   for name in EXCHANGE_IDS]
-        for f in futures:
-            f.result()
+    for name in EXCHANGE_IDS:
+        run_exchange(name, checkpoint, test_mode)
     print("\nAll exchanges done. Raw data:", RAW_CSV_FILE)
 
 
